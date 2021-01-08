@@ -1,5 +1,5 @@
 ---
-title: "R Notebook- Project Stat 652"
+title: "Loan Approval"
 author: "Maitry Shah"
 date: "March 1,2020"
 output:
