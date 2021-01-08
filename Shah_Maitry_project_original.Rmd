@@ -1,0 +1,528 @@
+---
+title: "R Notebook- Project Stat 652"
+author: "Maitry Shah"
+date: "March 1,2020"
+output:
+  html_document: 
+    number_sections: yes
+  html_notebook: default
+  pdf_document: default
+---
+```{r}
+library(pacman)
+p_load(mdsr, tidyverse, Amelia, rpart,ggplot,ggplot2)
+library(caret)
+library(lattice)
+library(ggplot2)
+library(e1071)
+library(GGally)
+library(dplyr)
+library(C50)
+library(tictoc) 
+```
+\newpage
+Introduction:
+#Read CVS file Accepted Data
+loan<- read.csv("accepted_2007_to_2018Q4.csv")
+head(loan)
+loan1<-loan
+
+#step-1
+
+library(lubridate)
+loan1$issue_d <- myd(loan1$issue_d, truncated = 1L)
+date1<- as.Date("2012-01-01")
+date2<- as.Date("2014-12-31")
+
+loan2 <- subset(loan1,issue_d>=date1 & issue_d<=date2)
+dim(loan2)
+#Save subset using saveRDS function
+saveRDS(loan2,file = "subsetloan.rds")
+--------------Didn't run everytime due to take it so long-----------------
+\newpage
+```{r}
+loan2<-readRDS("subsetloan.rds")
+```
+#step-2
+```{r}
+str(loan2)
+##missmap(loan2) 
+sapply(loan2, function(x) sum(is.na(x)))
+sapply(loan2, function(x) length(unique(x)))
+```
+
+```{r}
+loan2 %>% count()
+loan2 %>%
+  select(everything()) %>%  # replace to your needs
+  summarise_all(funs(sum(is.na(.))/10000))
+
+```
+
+
+```{r}
+loan3 <- loan2[, colSums(is.na(loan2))==0] 
+
+loan3 %>%
+  select(everything()) %>%  # replace to your needs
+  summarise_all(funs(sum(is.na(.))/10000))
+```
+
+```{r}
+sapply(loan3, function(x) length(unique(x)))
+
+loan3 <- loan3 %>% select(-id,-desc,-emp_title,-zip_code ,-application_type, -sec_app_earliest_cr_line, -disbursement_method, -url, -title, -policy_code) %>%
+  na.omit()
+
+dim(loan3)
+
+```
+
+```{r}
+
+loan3$loan_status <- as.character(loan3$loan_status)
+loan3 <- loan3 [((loan3$loan_status=="Charged Off") | (loan3$loan_status=="Fully Paid")),]
+table(loan3$loan_status)
+table(loan3$loan_status, loan3$grade)
+head(loan3)
+ggplot(loan3, aes(x = int_rate)) + geom_histogram(aes(fill = grade)) + facet_wrap(~loan_status, ncol = 1)
+```
+```{r}
+table(loan3$loan_status, loan3$term)
+loan3$loan_status <- as.factor(loan3$loan_status)
+```
+```{r}
+index = createDataPartition(y = loan3$loan_status, p = 0.90)[[1]]
+loan3.sample <- loan3[-index,]
+ggplot(loan3.sample, aes(x = loan_amnt, y = int_rate)) + geom_point(aes(color = term))
+```
+
+```{r}
+loan4<-loan3
+```
+
+
+```{r}
+loan4$bad_loan <- ifelse(loan3$loan_status %in% c("Charged Off", "Default", "Late (16-30 days)", "Late (31-120 days)", "Does not meet the credit policy. Status:Charged Off", "In Grace Period"), 1, 
+                             ifelse(loan3$loan_status == "Fully Paid", 0, "Other"))
+```
+
+```{r}
+ggplot(loan4, aes(bad_loan, group= verification_status_joint)) + geom_bar(aes(y= ..prop.., fill = factor(..x..)), stat="count")+  facet_grid(~verification_status_joint) + labs(title = "The proportion of bad loan by verification status")
+```
+```{r}
+ggplot(loan3, aes(x= as.factor(purpose) , y=loan_amnt)) + geom_boxplot(aes(fill = grade))+ 
+  labs(x= "Purpose", y= "Loan Amount")
+```
+
+```{r}
+library(rpart.plot)
+library(rpart)
+library(rattle)
+
+# fixing empty character level names
+
+levels(loan3$term)[1] = "missing"
+levels(loan3$sub_grade)[1] = "missing"
+levels(loan3$grade)[1] = "missing"
+levels(loan3$debt_settlement_flag)[1] = "missing"
+levels(loan3$home_ownership)[1] = "missing"
+
+index<-createDataPartition(loan3$loan_status,p=0.75,list = FALSE)
+loan3_test <- loan3[-index,]
+loan3_train <- loan3[index,]
+
+
+loans.rpart.0 <- rpart(loan_status ~ ., data = loan3_train)
+loans.rpart.1 <- rpart(loan_status ~ . , data = loan3_train, 
+                      control=rpart.control(minsplit=10, minbucket = 3, cp=0.001))
+fancyRpartPlot(loans.rpart.1)
+
+```
+```{r}
+predictions <- (predict(loans.rpart.0, loan3_train,type = "class"))
+confusionMatrix(predictions, loan3_train$loan_status)
+
+```
+```{r}
+library(ROCR)
+library(ROSE)
+roc.curve(loan3_test$loan_status, predict(loans.rpart.0, loan3_test, type = "prob")[,1], plot = TRUE)
+```
+
+```{r}
+library(trelliscopejs)
+library(gapminder)
+
+qplot(purpose, int_rate, data = loan3) + ylim(range.default(loan3$int_rate)) +
+  theme_bw() + facet_trelliscope(~ addr_state,nrow = 2, ncol = 7, width = 300,as_plotly = TRUE,path = "Shah_Maitry_stat652_project.pdf" )
+
+
+
+```
+
+```{r}
+sampledf<-loan3[sample(nrow(loan3), 1000), ]
+index<-createDataPartition(sampledf$loan_status,p=0.75,list = FALSE)
+sampledf_test <- sampledf[-index,]
+sampledf_train <- sampledf[index,]
+
+```
+
+#checking accuracy and kappa using CART and KNN model Package: caret ,train fucntion
+```{r}
+library(e1071)
+#10-fold cross validation
+control<-trainControl(method = "cv",number = 10)
+metric<- "Accuracy"
+set.seed(7)
+fit.knn <- train(loan_status~., data=sampledf, method="knn", metric=metric, trControl=control)
+```
+```{r}
+#nonlinear algorithms
+# CART
+set.seed(7)
+fit.cart <- train(loan_status~., data=sampledf, method="rpart", metric=metric, trControl=control)
+# kNN
+
+
+set.seed(7)
+fit.svm <- train(loan_status~., data=sampledf, method="svmRadial", metric=metric, trControl=control)
+
+
+# summarize accuracy of models
+results <- resamples(list(cart=fit.cart, knn=fit.knn,svm=fit.svm))
+summary(results)
+
+dotplot(results)
+
+# estimate skill of KNN on the validation dataset
+predictions <- predict(fit.knn, sampledf)
+confusionMatrix(predictions, sampledf$loan_status)
+# estimate skill of CART on the validation dataset
+predictions <- predict(fit.cart, sampledf)
+confusionMatrix(predictions, sampledf$loan_status)
+# estimate skill of SVM on the validation dataset
+predictions <- predict(fit.svm, sampledf)
+confusionMatrix(predictions, sampledf$loan_status)
+```
+#ROC for CART mdoel
+```{r}
+library(ROCR)
+
+#trainning
+
+p <- predict(fit.cart, newdata=sampledf_train, type="prob")
+
+pr <- prediction(p[,2], sampledf_train$loan_status)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+#ROC for KNN mdoel
+```{r}
+library(ROCR)
+
+#trainning
+
+p <- predict(fit.knn, newdata=sampledf_train, type="prob")
+
+pr <- prediction(p[,2], sampledf_train$loan_status)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+```{r}
+library(ROCR)
+
+#trainning
+
+p <- predict(fit.cart, newdata=sampledf_train, type="prob")
+
+pr <- prediction(p[,2], sampledf_train$loan_status)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+```
+
+
+#C5.0 Decision Tree
+```{r}
+## Boosting ----
+
+library(C50)
+
+
+  tic()
+m_c50_bst <- C5.0(loan_status ~ loan_amnt + funded_amnt + funded_amnt_inv + term + int_rate + 
+    installment + grade + sub_grade + home_ownership + 
+    annual_inc +  
+     dti + delinq_2yrs +  
+    fico_range_low + fico_range_high + inq_last_6mths + open_acc + 
+    pub_rec + revol_bal + total_acc +  out_prncp + 
+    out_prncp_inv + total_pymnt + total_pymnt_inv + total_rec_prncp + 
+    total_rec_int + total_rec_late_fee + recoveries + collection_recovery_fee + 
+    last_pymnt_amnt + 
+    last_fico_range_high + last_fico_range_low + collections_12_mths_ex_med + 
+    acc_now_delinq + chargeoff_within_12_mths + 
+    delinq_amnt + pub_rec_bankruptcies + tax_liens  + 
+    debt_settlement_flag, data = loan3_train, trials = 5, rule = FALSE)
+toc()
+  summary(m_c50_bst)
+credit_pred <- predict(m_c50_bst, loan3_train)
+confusionMatrix(data=credit_pred, loan3_train$loan_status)
+ 
+## Using AdaBoost.M1
+library(adabag)
+
+# create a Adaboost.M1 model
+tic()
+set.seed(300)
+m_adaboost <- boosting(loan_status ~ loan_amnt + funded_amnt + funded_amnt_inv + term + int_rate+ 
+    installment + grade + sub_grade + home_ownership + 
+    annual_inc +  
+     dti + delinq_2yrs +  
+    fico_range_low + fico_range_high + inq_last_6mths + open_acc + 
+    pub_rec + revol_bal + total_acc +  out_prncp + 
+    out_prncp_inv + total_pymnt + total_pymnt_inv + total_rec_prncp + 
+    total_rec_int + total_rec_late_fee + recoveries + collection_recovery_fee + 
+    last_pymnt_amnt + 
+    last_fico_range_high + last_fico_range_low + collections_12_mths_ex_med + 
+    acc_now_delinq + chargeoff_within_12_mths + 
+    delinq_amnt + pub_rec_bankruptcies + tax_liens  + 
+    debt_settlement_flag, data = loan3_train)
+toc()
+
+p_adaboost <- predict(m_adaboost, loan3_train)
+head(p_adaboost$class)
+p_adaboost$confusion
+
+# create and evaluate an Adaboost.M1 model using 10-fold-CV
+tic()
+set.seed(300)
+adaboost_cv <- boosting.cv(loan_status ~ loan_amnt + funded_amnt + funded_amnt_inv + term + int_rate + 
+    installment + grade + sub_grade + home_ownership + 
+    annual_inc +  
+     dti + delinq_2yrs +  
+    fico_range_low + fico_range_high + inq_last_6mths + open_acc + 
+    pub_rec + revol_bal + total_acc +  out_prncp + 
+    out_prncp_inv + total_pymnt + total_pymnt_inv + total_rec_prncp + 
+    total_rec_int + total_rec_late_fee + recoveries + collection_recovery_fee + 
+    last_pymnt_amnt + 
+    last_fico_range_high + last_fico_range_low + collections_12_mths_ex_med + 
+    acc_now_delinq + chargeoff_within_12_mths + 
+    delinq_amnt + pub_rec_bankruptcies + tax_liens  + 
+    debt_settlement_flag, data = loan3_train)
+toc()
+
+adaboost_cv$confusion
+
+# calculate kappa
+library(vcd)
+Kappa(adaboost_cv$confusion)
+```
+
+## Random Forests 
+```{r}
+
+# random forest with default settings
+library(randomForest)
+
+tic()
+set.seed(300)
+rf <- randomForest(loan_status ~ loan_amnt + funded_amnt + funded_amnt_inv + term + int_rate + 
+    installment + grade + sub_grade + home_ownership + 
+    annual_inc +  
+     dti + delinq_2yrs +  
+    fico_range_low + fico_range_high + inq_last_6mths + open_acc + 
+    pub_rec + revol_bal + total_acc +  out_prncp + 
+    out_prncp_inv + total_pymnt + total_pymnt_inv + total_rec_prncp + 
+    total_rec_int + total_rec_late_fee + recoveries + collection_recovery_fee + 
+    last_pymnt_amnt + 
+    last_fico_range_high + last_fico_range_low + collections_12_mths_ex_med + 
+    acc_now_delinq + chargeoff_within_12_mths + 
+    delinq_amnt + pub_rec_bankruptcies + tax_liens  + 
+    debt_settlement_flag, data = loan3_train)
+toc()
+
+rf
+
+credit_pred <- predict(rf, loan3_train)
+confusionMatrix(data=credit_pred, loan3_train$loan_status)
+
+library(caret)
+ctrl <- trainControl(method = "repeatedcv",
+                     number = 10, repeats = 10)
+
+# auto-tune a random forest
+grid_rf <- expand.grid(.mtry = c(2, 4, 8, 16))
+
+tic()
+set.seed(300)
+m_rf <- train(loan_status ~ loan_amnt + funded_amnt + funded_amnt_inv + term + int_rate + 
+    installment + grade + sub_grade + home_ownership + 
+    annual_inc +  
+     dti + delinq_2yrs +  
+    fico_range_low + fico_range_high + inq_last_6mths + open_acc + 
+    pub_rec + revol_bal + total_acc +  out_prncp + 
+    out_prncp_inv + total_pymnt + total_pymnt_inv + total_rec_prncp + 
+    total_rec_int + total_rec_late_fee + recoveries + collection_recovery_fee + 
+    last_pymnt_amnt + 
+    last_fico_range_high + last_fico_range_low + collections_12_mths_ex_med + 
+    acc_now_delinq + chargeoff_within_12_mths + 
+    delinq_amnt + pub_rec_bankruptcies + tax_liens  + 
+    debt_settlement_flag, data = loan3_train, method = "rf",
+              metric = "Kappa", trControl = ctrl,
+              tuneGrid = grid_rf)
+toc()
+
+m_rf
+
+credit_pred <- predict(m_rf, loan3)
+confusionMatrix(data=credit_pred, loan3$loan_status)
+
+```
+
+
+```{r}
+# auto-tune a boosted C5.0 decision tree
+grid_c50 <- expand.grid(.model = "tree",
+                        .trials = c(10, 20),
+                        .winnow = "FALSE")
+
+tic()
+set.seed(300)
+m_c50 <- train(loan_status ~ loan_amnt + funded_amnt + funded_amnt_inv + term + int_rate + 
+    installment + grade + sub_grade + home_ownership + 
+    annual_inc +  
+     dti + delinq_2yrs +  
+    fico_range_low + fico_range_high + inq_last_6mths + open_acc + 
+    pub_rec + revol_bal + total_acc +  out_prncp + 
+    out_prncp_inv + total_pymnt + total_pymnt_inv + total_rec_prncp + 
+    total_rec_int + total_rec_late_fee + recoveries + collection_recovery_fee + 
+    last_pymnt_amnt + 
+    last_fico_range_high + last_fico_range_low + collections_12_mths_ex_med + 
+    acc_now_delinq + chargeoff_within_12_mths + 
+    delinq_amnt + pub_rec_bankruptcies + tax_liens  + 
+    debt_settlement_flag, data = loan3, method = "C5.0",
+                metric = "Kappa", trControl = ctrl,
+               tuneGrid = grid_c50)
+toc()
+
+m_c50
+
+credit_pred <- predict(m_c50, loan3)
+confusionMatrix(data=credit_pred, loan3$loan_status)
+
+```
+```{r}
+## Random Forests ----
+library(ranger)
+
+tic()
+set.seed(300)
+m_rf_ranger <- ranger(loan_status ~ loan_amnt + funded_amnt + funded_amnt_inv + term + int_rate + 
+    installment + grade + sub_grade + home_ownership + 
+    annual_inc +  
+     dti + delinq_2yrs +  
+    fico_range_low + fico_range_high + inq_last_6mths + open_acc + 
+    pub_rec + revol_bal + total_acc +  out_prncp + 
+    out_prncp_inv + total_pymnt + total_pymnt_inv + total_rec_prncp + 
+    total_rec_int + total_rec_late_fee + recoveries + collection_recovery_fee + 
+    last_pymnt_amnt + 
+    last_fico_range_high + last_fico_range_low + collections_12_mths_ex_med + 
+    acc_now_delinq + chargeoff_within_12_mths + 
+    delinq_amnt + pub_rec_bankruptcies + tax_liens  + 
+    debt_settlement_flag, data = loan3, num.threads = 8)
+toc()
+
+m_rf_ranger
+
+m_rf_ranger$confusion.matrix
+```
+
+
+
+
+#logistic Regression
+```{r}
+lmodel <- glm(loan_status  ~ int_rate+ grade + loan_amnt + annual_inc,
+                     family = "binomial", data = loan3_train)
+summary(lmodel)
+predictions_s <- predict(lmodel, newdata = loan3_train,
+                              type = "response")                
+
+range(predictions_s) 
+
+```
+```{r}
+pred_cutoff_20 <- ifelse(predictions_s > 0.55,1,0)
+
+conf_20 <- table(loan3_train$loan_status,pred_cutoff_20)
+conf_20
+accuracy_20 <- sum(diag(conf_20))/sum(conf_20)
+accuracy_20
+
+```
+```{r}
+library(ROCR)
+pred_train_small <- predict(lmodel,type = "response")
+
+predROC_small <- prediction(pred_train_small, loan3_train$loan_status)
+
+perfROC_small <- performance(predROC_small,"tpr","fpr")
+
+plot(perfROC_small, colorize = TRUE,
+     print.cutoffs.at = seq(0,1,0.1),text.adj = c(-0.2,1.7))
+```
+```{r}
+AUC_small <- as.numeric(performance(predROC_small , "auc")@y.values)
+AUC_small
+```
+```{r}
+library(Boruta)
+ set.seed(1)
+Boruta.loan <- Boruta(loan_status ~ loan_amnt + funded_amnt + funded_amnt_inv + term + int_rate + 
+    installment + grade + sub_grade + home_ownership + 
+    annual_inc +  
+     dti + delinq_2yrs +  
+    fico_range_low + fico_range_high + inq_last_6mths + open_acc + 
+    pub_rec + revol_bal + total_acc +  out_prncp + 
+    out_prncp_inv + total_pymnt + total_pymnt_inv + total_rec_prncp + 
+    total_rec_int + total_rec_late_fee + recoveries + collection_recovery_fee + 
+    last_pymnt_amnt + 
+    last_fico_range_high + last_fico_range_low + collections_12_mths_ex_med + 
+    acc_now_delinq + chargeoff_within_12_mths + 
+    delinq_amnt + pub_rec_bankruptcies + tax_liens  + 
+    debt_settlement_flag, data = loan3, doTrace = 2, ntree = 500)
+ set.seed(1)
+Boruta.Short <- Boruta(loan_status ~ ., data = loan3_test, maxRuns = 12)
+TentativeRoughFix(Boruta.Short)
+getConfirmedFormula(Boruta.loan)
+attStats(Boruta.loan)
+plot(Boruta.loan,las = 2, cex.axis = 0.7)
+plotImpHistory(Boruta.loan)
+```
+\newpage
+
+```{r}
+tbl<-matrix(c("97.87%","0.92","0.94","92.9%","0.688","0.8898","97.6%","0.9055","0.9614","99.7%","0.988","","98.5%","0.94","",
+              "83.75%","0.694","","97.4%","0.897",""),ncol = 3,byrow = TRUE)
+colnames(tbl)<-c("Accuracy","Kappa","AUC")
+rownames(tbl)<-c("Regression Tree","KNN","CART","Random Forest","C5.0","Logistic Regression","SVM")
+tbl<-as.table(tbl)
+tbl
+#Summary Table
+```
+
+
+
